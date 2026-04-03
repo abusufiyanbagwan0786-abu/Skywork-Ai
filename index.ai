@@ -1,0 +1,122 @@
+import torch
+from diffusers import AutoModel, SkyReelsV2DiffusionForcingPipeline, UniPCMultistepScheduler
+from diffusers.utils import export_to_video
+
+vae = AutoModel.from_pretrained("Skywork/SkyReels-V2-DF-14B-540P-Diffusers", subfolder="vae", torch_dtype=torch.float32)
+
+pipeline = SkyReelsV2DiffusionForcingPipeline.from_pretrained(
+    "Skywork/SkyReels-V2-DF-14B-540P-Diffusers",
+    vae=vae,
+    torch_dtype=torch.bfloat16
+)
+flow_shift = 8.0  # 8.0 for T2V, 5.0 for I2V
+pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config, flow_shift=flow_shift)
+pipeline = pipeline.to("cuda")
+
+prompt = "A cat and a dog baking a cake together in a kitchen. The cat is carefully measuring flour, while the dog is stirring the batter with a wooden spoon. The kitchen is cozy, with sunlight streaming through the window."
+
+output = pipeline(
+    prompt=prompt,
+    num_inference_steps=30,
+    height=544,  # 720 for 720P
+    width=960,   # 1280 for 720P
+    num_frames=97,
+    base_num_frames=97,  # 121 for 720P
+    ar_step=5,  # Controls asynchronous inference (0 for synchronous mode)
+    causal_block_size=5,  # Number of frames in each block for asynchronous processing
+    overlap_history=None,  # Number of frames to overlap for smooth transitions in long videos; 17 for long video generations
+    addnoise_condition=20,  # Improves consistency in long video generation
+).frames[0]
+export_to_video(output, "T2V.mp4", fps=24, quality=8)
+model_id=Skywork/SkyReels-V2-DF-14B-540P
+# asynchronous inference
+python3 generate_video_df.py \
+  --model_id ${model_id} \
+  --resolution 540P \
+  --ar_step 5 \
+  --causal_block_size 5 \
+  --base_num_frames 97 \
+  --num_frames 737 \
+  --overlap_history 17 \
+  --prompt "A graceful white swan with a curved neck and delicate feathers swimming in a serene lake at dawn, its reflection perfectly mirrored in the still water as mist rises from the surface, with the swan occasionally dipping its head into the water to feed." \
+  --addnoise_condition 20 \
+  --offload
+  model_id=Skywork/SkyReels-V2-DF-14B-540P
+# synchronous inference
+python3 generate_video_df.py \
+  --model_id ${model_id} \
+  --resolution 540P \
+  --ar_step 0 \
+  --base_num_frames 97 \
+  --num_frames 257 \
+  --overlap_history 17 \
+  --prompt "A graceful white swan with a curved neck and delicate feathers swimming in a serene lake at dawn, its reflection perfectly mirrored in the still water as mist rises from the surface, with the swan occasionally dipping its head into the water to feed." \
+  --addnoise_condition 20 \
+  --offload \
+  --teacache \
+  --use_ret_steps \
+  --teacache_thresh 0.3
+  import numpy as np
+import torch
+import torchvision.transforms.functional as TF
+from diffusers import AutoencoderKLWan, SkyReelsV2DiffusionForcingImageToVideoPipeline, UniPCMultistepScheduler
+from diffusers.utils import export_to_video, load_image
+
+model_id = "Skywork/SkyReels-V2-DF-14B-720P-Diffusers"
+vae = AutoencoderKLWan.from_pretrained(model_id, subfolder="vae", torch_dtype=torch.float32)
+pipeline = SkyReelsV2DiffusionForcingImageToVideoPipeline.from_pretrained(
+    model_id, vae=vae, torch_dtype=torch.bfloat16
+)
+flow_shift = 5.0  # 8.0 for T2V, 5.0 for I2V
+pipeline.scheduler = UniPCMultistepScheduler.from_config(pipeline.scheduler.config, flow_shift=flow_shift)
+pipeline.to("cuda")
+
+first_frame = load_image("https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/flf2v_input_first_frame.png")
+last_frame = load_image("https://huggingface.co/datasets/huggingface/documentation-images/resolve/main/diffusers/flf2v_input_last_frame.png")
+
+def aspect_ratio_resize(image, pipeline, max_area=720 * 1280):
+    aspect_ratio = image.height / image.width
+    mod_value = pipeline.vae_scale_factor_spatial * pipeline.transformer.config.patch_size[1]
+    height = round(np.sqrt(max_area * aspect_ratio)) // mod_value * mod_value
+    width = round(np.sqrt(max_area / aspect_ratio)) // mod_value * mod_value
+    image = image.resize((width, height))
+    return image, height, width
+
+def center_crop_resize(image, height, width):
+    # Calculate resize ratio to match first frame dimensions
+    resize_ratio = max(width / image.width, height / image.height)
+
+    # Resize the image
+    width = round(image.width * resize_ratio)
+    height = round(image.height * resize_ratio)
+    size = [width, height]
+    image = TF.center_crop(image, size)
+
+    return image, height, width
+
+first_frame, height, width = aspect_ratio_resize(first_frame, pipeline)
+if last_frame.size != first_frame.size:
+    last_frame, _, _ = center_crop_resize(last_frame, height, width)
+
+prompt = "CG animation style, a small blue bird takes off from the ground, flapping its wings. The bird's feathers are delicate, with a unique pattern on its chest. The background shows a blue sky with white clouds under bright sunshine. The camera follows the bird upward, capturing its flight and the vastness of the sky from a close-up, low-angle perspective."
+
+output = pipeline(
+    image=first_frame, last_image=last_frame, prompt=prompt, height=height, width=width, guidance_scale=5.0
+).frames[0]
+export_to_video(output, "output.mp4", fps=24, quality=8)
+model_id=Skywork/SkyReels-V2-DF-14B-540P
+# video extention
+python3 generate_video_df.py \
+  --model_id ${model_id} \
+  --resolution 540P \
+  --ar_step 0 \
+  --base_num_frames 97 \
+  --num_frames 120 \
+  --overlap_history 17 \
+  --prompt ${prompt} \
+  --addnoise_condition 20 \
+  --offload \
+  --use_ret_steps \
+  --teacache \
+  --teacache_thresh 0.3 \
+  --video_path ${video_path}
